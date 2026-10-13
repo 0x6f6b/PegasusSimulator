@@ -141,8 +141,7 @@ class Multirotor(Vehicle):
         )
 
         # Generate the rotating propeller visual effect
-        for i in range(4):
-            self.handle_propeller_visual(i, forces_z[i])
+        self.handle_propeller_visuals(forces_z)
 
         # Call the update methods in all backends
         for backend in self._backends:
@@ -164,6 +163,35 @@ class Multirotor(Vehicle):
             return idx
         except Exception:
             return None
+
+    def handle_propeller_visuals(self, forces):
+        """
+        Set the joint velocity of all rotors (for animation purposes) in a single call. Same velocities as calling
+        handle_propeller_visual for each rotor, but one articulation write per physics step instead of one per rotor.
+
+        Args:
+            forces (list): The force being applied on each rotor, in rotor order.
+        """
+        if self._articulation is None or not self._articulation.is_physics_tensor_entity_valid():
+            return
+
+        dof_indices = []
+        velocities = []
+        for rotor_number, force in enumerate(forces):
+            dof_idx = self._get_rotor_dof_index(rotor_number)
+            if dof_idx is None:
+                continue
+            if 0.0 < force < 0.1:
+                velocity = 5.0 * self._thrusters.rot_dir[rotor_number]
+            elif 0.1 <= force:
+                velocity = 100.0 * self._thrusters.rot_dir[rotor_number]
+            else:
+                velocity = 0.0
+            dof_indices.append(dof_idx)
+            velocities.append(velocity)
+
+        if dof_indices:
+            self._articulation.set_dof_velocities([velocities], dof_indices=dof_indices)
 
     def handle_propeller_visual(self, rotor_number: int, force: float):
         """
