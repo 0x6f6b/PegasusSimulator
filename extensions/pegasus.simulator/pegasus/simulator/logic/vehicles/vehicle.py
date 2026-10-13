@@ -352,13 +352,11 @@ class Vehicle:
         # get_world_poses() returns (positions wp.array Nx3, orientations wp.array Nx4 in wxyz)
         positions, orientations = self._body_rigid_prim.get_world_poses()
         pos = positions.numpy()[0]        # [x, y, z]
-        quat_wxyz = orientations.numpy()[0]  # [qw, qx, qy, qz]
+        quat_wxyz = orientations.numpy()[0].astype(np.float64)  # [qw, qx, qy, qz]
 
-        # Get the attitude via the USD rotation (more accurate for orientation)
-        prim = self._current_stage.GetPrimAtPath(self._stage_prefix + "/body")
-        rotation_quat = get_world_transform_xform(prim).GetQuaternion()
-        rotation_quat_real = rotation_quat.GetReal()
-        rotation_quat_img = rotation_quat.GetImaginary()
+        # Note: the attitude must come from the physics engine (like the position and velocities above), not from the
+        # USD transform. USD is only synchronised with physics when a frame is rendered (every ~4 physics steps at
+        # 250 Hz / 60 Hz), so reading it here gave an attitude up to 3 steps stale, and results depended on render rate.
 
         # Get the linear and angular velocities
         # get_velocities() returns (linear wp.array Nx3, angular wp.array Nx3) both in world frame
@@ -378,9 +376,7 @@ class Vehicle:
         self._state.position = np.array(pos)
 
         # Get the quaternion in the [qx, qy, qz, qw] standard
-        self._state.attitude = np.array(
-            [rotation_quat_img[0], rotation_quat_img[1], rotation_quat_img[2], rotation_quat_real]
-        )
+        self._state.attitude = np.array([quat_wxyz[1], quat_wxyz[2], quat_wxyz[3], quat_wxyz[0]])
 
         # Express the velocity of the vehicle in the inertial frame X_dot = [x_dot, y_dot, z_dot]
         self._state.linear_velocity = np.array(linear_vel)
