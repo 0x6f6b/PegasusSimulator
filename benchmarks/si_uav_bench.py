@@ -1,17 +1,19 @@
 """
 Benchmark + physics regression check for the Pegasus Isaac Sim 6 port (si-uav fork).
 
-Flies a fixed, repeatable flight headless and records:
-  - wall-clock cost per physics step, broken down by Pegasus callback
-  - the vehicle's position and attitude at every physics step (to compare against a reference run)
+Two headless, repeatable flights:
+  --mode python  Iris + Pegasus's NonlinearController on its built-in trajectory (no PX4). Records the vehicle's
+                 position/attitude and every sensor's output at each physics step. With a fixed random seed, two runs
+                 of the same code are bit-identical, so any change to the physics or the sensor models shows up.
+  --mode px4     Pegasus drone + PX4 SITL (started once the drone rests on the floor), armed and taken off over
+                 MAVLink, then hovering. Records readiness time, hover altitude/stability and the cost per step.
+
+Both report wall-clock cost per physics step, broken down by Pegasus callback.
 
 Usage (with ISAACSIM_PATH set):
-    $ISAACSIM_PYTHON benchmarks/si_uav_bench.py --out /tmp/run.npz [--steps 3000]
+    $ISAACSIM_PYTHON benchmarks/si_uav_bench.py --mode python --out /tmp/run.npz [--steps 3000] [--profile]
+    $ISAACSIM_PYTHON benchmarks/si_uav_bench.py --mode px4 --out /tmp/px4.npz
     $ISAACSIM_PYTHON benchmarks/si_uav_bench.py --compare reference.npz candidate.npz
-
-The flight uses Pegasus's NonlinearController (no PX4) on the Iris following its built-in trajectory, on the
-Flat Plane environment. The controller uses the true vehicle state and simulated time only, so two runs of the
-same code should produce the same trajectory.
 """
 
 import argparse
@@ -24,9 +26,13 @@ from collections import defaultdict
 
 import numpy as np
 
+PHYSICS_DT = 1.0 / 250.0
+
 parser = argparse.ArgumentParser()
+parser.add_argument("--mode", choices=["python", "px4"], default="python")
 parser.add_argument("--out", help="where to save the recorded run (.npz)")
-parser.add_argument("--steps", type=int, default=3000, help="physics steps to record (250 Hz)")
+parser.add_argument("--steps", type=int, default=3000, help="physics steps to record in python mode (250 Hz)")
+parser.add_argument("--profile", action="store_true", help="print the top functions by own time (cProfile)")
 parser.add_argument("--compare", nargs=2, metavar=("REFERENCE", "CANDIDATE"), help="compare two recorded runs and exit")
 args = parser.parse_args()
 
@@ -38,12 +44,15 @@ def compare(ref_path, cand_path):
     # Angle between attitudes: 2*acos(|<q1, q2>|)
     dot = np.abs(np.sum(ref["attitude"][:n] * cand["attitude"][:n], axis=1)).clip(0.0, 1.0)
     datt = np.degrees(2.0 * np.arccos(dot))
-    print(f"compared {n} steps ({n * 0.004:.1f} s sim)")
-    print(f"  position difference: max {dpos.max() * 1000:.3f} mm, final {dpos[-1] * 1000:.3f} mm")
-    print(f"  attitude difference: max {datt.max():.4f} deg, final {datt[-1]:.4f} deg")
+    print(f"compared {n} steps ({n * PHYSICS_DT:.1f} s sim)")
+    print(f"  position difference: max {dpos.max() * 1000:.6f} mm, final {dpos[-1] * 1000:.6f} mm")
+    print(f"  attitude difference: max {datt.max():.6f} deg, final {datt[-1]:.6f} deg")
     print(f"  distance flown (reference): {np.sum(np.linalg.norm(np.diff(ref['position'][:n], axis=0), axis=1)):.2f} m")
-    for name in ("ms_per_step",):
-        print(f"  {name}: reference {float(ref[name]):.2f}, candidate {float(cand[name]):.2f}")
+    for key in sorted(k for k in ref.files if k.startswith("sensor_") and k in cand.files):
+        a, b = ref[key][:n], cand[key][:n]
+        scale = np.abs(a).max() if np.abs(a).max() > 0 else 1.0
+        print(f"  {key:24s} max abs diff {np.abs(a - b).max():.3e}  (signal max {scale:.3e})")
+    print(f"  ms_per_step: reference {float(ref['ms_per_step']):.2f}, candidate {float(cand['ms_per_step']):.2f}")
 
 
 if args.compare:
@@ -62,9 +71,6 @@ from pegasus.simulator.logic.vehicles.multirotor import Multirotor, MultirotorCo
 from pegasus.simulator.logic.vehicles.vehicle import Vehicle
 from pegasus.simulator.params import ROBOTS, SIMULATION_ENVIRONMENTS
 from scipy.spatial.transform import Rotation
-
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "examples", "utils"))
-from nonlinear_controller import NonlinearController
 
 # --- per-callback timing -------------------------------------------------------------------------------------------
 T = defaultdict(float)
@@ -99,46 +105,148 @@ while settled < 30:
     _, loaded, total = ctx.get_stage_loading_status()
     settled = settled + 1 if loaded >= total else 0
 
-# --- vehicle: Iris + Pegasus's nonlinear controller on its built-in trajectory -------------------------------------
+# --- vehicle ---------------------------------------------------------------------------------------------------------
 config = MultirotorConfig()
-config.backends = [NonlinearController(trajectory_file=None, results_file=os.path.join(tempfile.gettempdir(), "si_uav_bench_controller_stats.npz"), Ki=[0.5, 0.5, 0.5], Kr=[2.0, 2.0, 2.0])]
-vehicle = Multirotor("/World/quadrotor", ROBOTS["Iris"], 0, [0.0, 0.0, 0.07],
+if args.mode == "python":
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "examples", "utils"))
+    from nonlinear_controller import NonlinearController
+
+    config.backends = [NonlinearController(
+        trajectory_file=None, results_file=os.path.join(tempfile.gettempdir(), "si_uav_bench_controller_stats.npz"),
+        Ki=[0.5, 0.5, 0.5], Kr=[2.0, 2.0, 2.0])]
+    robot = ROBOTS["Iris"]
+else:
+    from pegasus.simulator.logic.backends.px4_mavlink_backend import PX4MavlinkBackend, PX4MavlinkBackendConfig
+
+    config.backends = [PX4MavlinkBackend(PX4MavlinkBackendConfig({
+        "vehicle_id": 0, "px4_autolaunch": False, "px4_dir": pg.px4_path,
+        "px4_vehicle_model": pg.px4_default_airframe}))]
+    robot = ROBOTS["Pegasus"]
+vehicle = Multirotor("/World/quadrotor", robot, 0, [0.0, 0.0, 0.07],
                      Rotation.from_euler("XYZ", [0.0, 0.0, 0.0], degrees=True).as_quat(), config=config)
 
+# --- per-step recording ----------------------------------------------------------------------------------------------
 positions, attitudes = [], []
+sensor_log = defaultdict(list)
+recording = [False]
+
+
+def _flatten(values):
+    out = []
+    for v in values:
+        out.extend(np.ravel(np.asarray(v, dtype=np.float64)).tolist())
+    return out
 
 
 def record(dt, context=None):
-    if len(positions) < args.steps:
-        positions.append(np.array(vehicle.state.position, dtype=np.float64))
-        attitudes.append(np.array(vehicle.state.attitude, dtype=np.float64))
+    if not recording[0]:
+        return
+    positions.append(np.array(vehicle.state.position, dtype=np.float64))
+    attitudes.append(np.array(vehicle.state.attitude, dtype=np.float64))
+    for sensor in vehicle._sensors:
+        state = sensor.state
+        if isinstance(state, dict):
+            sensor_log[sensor.sensor_type].append(_flatten(v for v in state.values() if not isinstance(v, str)))
 
 
 cb = SimulationManager.register_callback(record, SimulationEvent.PHYSICS_POST_STEP)
 
+np.random.seed(12345)  # sensor noise models use np.random; fix it so runs are comparable
 timeline = omni.timeline.get_timeline_interface()
 timeline.play()
 simulation_app.update()  # first step(s): physics warm-up
-for k in T:
-    T[k] = 0.0
-positions.clear()
-attitudes.clear()
 
-t0 = time.perf_counter()
-while len(positions) < args.steps and simulation_app.is_running():
-    simulation_app.update()
-wall = time.perf_counter() - t0
-steps = len(positions)
 
+def start_measuring():
+    for k in T:
+        T[k] = 0.0
+    positions.clear()
+    attitudes.clear()
+    sensor_log.clear()
+    recording[0] = True
+
+
+def sim_steps():
+    return len(positions)
+
+
+extra = {}
+if args.profile:
+    import cProfile
+    import pstats
+
+    profiler = cProfile.Profile()
+    profiler.enable()
+
+if args.mode == "python":
+    start_measuring()
+    t0 = time.perf_counter()
+    while sim_steps() < args.steps and simulation_app.is_running():
+        simulation_app.update()
+    wall = time.perf_counter() - t0
+else:
+    from pegasus.simulator.logic.backends.tools.px4_launch_tool import PX4LaunchTool
+    from pymavlink import mavutil
+
+    # Let the drone settle on the floor before PX4 starts (avoids the start-up race in Decision Log D24)
+    for _ in range(100):
+        simulation_app.update()
+    px4 = PX4LaunchTool(pg.px4_path, 0, pg.px4_default_airframe)
+    px4.launch_px4()
+    mav = mavutil.mavlink_connection("udpin:127.0.0.1:14540")
+    start_measuring()
+    t0 = time.perf_counter()
+    armed_at = takeoff_at = None
+    hover = []
+    last_cmd = -1e9
+    timeout_steps = int(120 / PHYSICS_DT)
+    while sim_steps() < timeout_steps and simulation_app.is_running():
+        simulation_app.update()
+        t_sim = sim_steps() * PHYSICS_DT
+        msg = mav.recv_match(blocking=False)
+        while msg is not None:
+            if msg.get_type() == "HEARTBEAT" and msg.get_srcSystem() == 1 and armed_at is None:
+                if msg.base_mode & mavutil.mavlink.MAV_MODE_FLAG_SAFETY_ARMED:
+                    armed_at = t_sim
+                    mav.mav.command_long_send(1, 1, mavutil.mavlink.MAV_CMD_NAV_TAKEOFF, 0, 0, 0, 0, float("nan"),
+                                              float("nan"), float("nan"), float("nan"))
+            msg = mav.recv_match(blocking=False)
+        # Try to arm every 2 s of sim time until PX4 accepts (it refuses until its pre-flight checks pass)
+        if armed_at is None and mav.target_system and t_sim - last_cmd > 2.0:
+            mav.mav.command_long_send(1, 1, mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM, 0, 1, 0, 0, 0, 0, 0, 0)
+            last_cmd = t_sim
+        altitude = positions[-1][2] if positions else 0.0
+        if armed_at is not None and takeoff_at is None and altitude > 2.0:
+            takeoff_at = t_sim
+        if takeoff_at is not None and t_sim > takeoff_at + 5.0:  # hover window: 5-15 s after reaching 2 m
+            hover.append(positions[-1].copy())
+            if t_sim > takeoff_at + 15.0:
+                break
+    wall = time.perf_counter() - t0
+    px4.kill_px4()
+    hover = np.array(hover) if hover else np.zeros((1, 3))
+    extra = {"armed_at": armed_at or -1.0, "takeoff_at": takeoff_at or -1.0,
+             "hover_alt_mean": hover[:, 2].mean(), "hover_alt_std": hover[:, 2].std(),
+             "hover_xy_drift": np.linalg.norm(hover[-1, :2] - hover[0, :2])}
+    print(f"RESULT px4: armed at {extra['armed_at']:.1f} s sim, reached 2 m at {extra['takeoff_at']:.1f} s sim, "
+          f"hover altitude {extra['hover_alt_mean']:.2f} m (std {100 * extra['hover_alt_std']:.1f} cm), "
+          f"xy drift over 10 s {100 * extra['hover_xy_drift']:.1f} cm")
+
+if args.profile:
+    profiler.disable()
+    pstats.Stats(profiler).sort_stats("tottime").print_stats(30)
+
+steps = sim_steps()
 ms_per_step = 1000 * wall / steps
-print(f"RESULT {steps} steps ({steps * 0.004:.1f} s sim) in {wall:.1f} s wall => {steps * 0.004 / wall:.2f}x real time, "
-      f"{ms_per_step:.2f} ms/step")
+print(f"RESULT {args.mode}: {steps} steps ({steps * PHYSICS_DT:.1f} s sim) in {wall:.1f} s wall => "
+      f"{steps * PHYSICS_DT / wall:.2f}x real time, {ms_per_step:.2f} ms/step")
 for k, v in T.items():
     print(f"RESULT   {k:20s} {1000 * v / steps:6.2f} ms/step")
 
 if args.out:
+    sensors = {f"sensor_{k}": np.array(v, dtype=np.float64) for k, v in sensor_log.items()}
     np.savez(args.out, position=np.array(positions), attitude=np.array(attitudes), ms_per_step=ms_per_step,
-             **{f"t_{k}": 1000 * v / steps for k, v in T.items()})
+             **sensors, **extra, **{f"t_{k}": 1000 * v / steps for k, v in T.items()})
     print(f"RESULT saved {args.out}")
 
 timeline.stop()
