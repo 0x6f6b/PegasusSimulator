@@ -63,8 +63,8 @@ class IMU(Sensor):
         self._accelerometer_bias_correlation_time = accelerometer_config.get("bias_correlation_time", 300.0)
         self._accelerometer_turn_on_bias_sigma = accelerometer_config.get("turn_on_bias_sigma", 0.196)
 
-        # Auxiliar variable used to compute the linear acceleration of the vehicle
-        self._prev_linear_velocity = np.zeros((3,))
+        # Auxiliar variable used to compute the linear acceleration of the vehicle (None until the first update)
+        self._prev_linear_velocity = None
 
         # Save the current state measured by the IMU
         self._state = {
@@ -72,6 +72,10 @@ class IMU(Sensor):
             "angular_velocity": np.array([0.0, 0.0, 0.0]),
             "linear_acceleration": np.array([0.0, 0.0, 0.0]),
         }
+
+    def start(self):
+        """Forget the previous velocity when the simulation (re)starts, so the first acceleration is not a spike."""
+        self._prev_linear_velocity = None
 
     @property
     def state(self):
@@ -96,6 +100,10 @@ class IMU(Sensor):
         Returns:
             (dict) A dictionary containing the current state of the sensor (the data produced by the sensor)
         """
+
+        # Without elapsed time there is no new measurement (and the noise model would divide by zero)
+        if dt <= 0.0:
+            return self._state
 
         # Gyroscopic terms
         tau_g: float = self._accelerometer_bias_correlation_time
@@ -130,7 +138,12 @@ class IMU(Sensor):
         # Compute state-transition.
         phi_a_d: float = np.exp(-1.0 / tau_a * dt)
 
-        # Compute the linear acceleration from diferentiating the velocity of the vehicle expressed in the inertial frame
+        # Compute the linear acceleration from diferentiating the velocity of the vehicle expressed in the inertial frame.
+        # On the first update there is no previous velocity: use the current one (zero acceleration, i.e. gravity only)
+        # rather than zero, which produced a spurious spike (e.g. +19.6 m/s^2 for a vehicle spawned while falling) that
+        # can make PX4's estimator initialise upside down.
+        if self._prev_linear_velocity is None:
+            self._prev_linear_velocity = state.linear_velocity
         linear_acceleration_inertial = (state.linear_velocity - self._prev_linear_velocity) / dt
         linear_acceleration_inertial = linear_acceleration_inertial - GRAVITY_VECTOR
 
