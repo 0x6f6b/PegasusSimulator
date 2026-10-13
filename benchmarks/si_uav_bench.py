@@ -44,7 +44,9 @@ def compare(ref_path, cand_path):
     n = min(len(ref["position"]), len(cand["position"]))
     dpos = np.linalg.norm(ref["position"][:n] - cand["position"][:n], axis=1)
     # Angle between attitudes: 2*acos(|<q1, q2>|)
-    dot = np.abs(np.sum(ref["attitude"][:n] * cand["attitude"][:n], axis=1)).clip(0.0, 1.0)
+    qa = ref["attitude"][:n] / np.linalg.norm(ref["attitude"][:n], axis=1, keepdims=True)  # float32 physics quats
+    qb = cand["attitude"][:n] / np.linalg.norm(cand["attitude"][:n], axis=1, keepdims=True)  # aren't exactly unit
+    dot = np.abs(np.sum(qa * qb, axis=1)).clip(0.0, 1.0)
     datt = np.degrees(2.0 * np.arccos(dot))
     print(f"compared {n} steps ({n * PHYSICS_DT:.1f} s sim)")
     print(f"  position difference: max {dpos.max() * 1000:.6f} mm, final {dpos[-1] * 1000:.6f} mm")
