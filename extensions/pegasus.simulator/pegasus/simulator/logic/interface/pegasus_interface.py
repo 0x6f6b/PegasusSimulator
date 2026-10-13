@@ -35,7 +35,7 @@ class PegasusInterface:
     """
 
     # The object instance of the Vehicle Manager
-    _instance = None
+    _instance: "PegasusInterface | None" = None
     _is_initialized = False
 
     # Lock for safe multi-threading
@@ -593,7 +593,7 @@ class PegasusInterface:
         carb.log_warn("New global coordinates set to: latitude=" + str(latitude) + ", longitude=" + str(longitude) + ", altitude=" + str(altitude))
 
 
-    def __new__(cls):
+    def __new__(cls) -> "PegasusInterface":
         """Allocates the memory and creates the actual PegasusInterface object is not instance exists yet. Otherwise,
         returns the existing instance of the PegasusInterface class.
 
