@@ -32,6 +32,8 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--mode", choices=["python", "px4"], default="python")
 parser.add_argument("--out", help="where to save the recorded run (.npz)")
 parser.add_argument("--steps", type=int, default=3000, help="physics steps to record in python mode (250 Hz)")
+parser.add_argument("--render-hz", type=float, default=None,
+                    help="step physics manually and render only at this sim-time rate (0 = never); default: let the app step and render")
 parser.add_argument("--profile", action="store_true", help="print the top functions by own time (cProfile)")
 parser.add_argument("--compare", nargs=2, metavar=("REFERENCE", "CANDIDATE"), help="compare two recorded runs and exit")
 args = parser.parse_args()
@@ -170,6 +172,23 @@ def sim_steps():
     return len(positions)
 
 
+if args.render_hz is None:
+    advance = simulation_app.update  # the app steps physics (~4 steps per frame) and renders every frame
+else:
+    import carb
+
+    # Stop app.update() from stepping physics; step it ourselves and render only when a frame is due
+    carb.settings.get_settings().set("/app/player/playSimulations", False)
+    render_every = int(round(1.0 / (args.render_hz * PHYSICS_DT))) if args.render_hz > 0 else 0
+    rendered = [0]
+
+    def advance():
+        SimulationManager.step(steps=1)
+        if render_every and sim_steps() % render_every == 0:
+            simulation_app.update()
+            rendered[0] += 1
+
+
 extra = {}
 if args.profile:
     import cProfile
@@ -182,7 +201,7 @@ if args.mode == "python":
     start_measuring()
     t0 = time.perf_counter()
     while sim_steps() < args.steps and simulation_app.is_running():
-        simulation_app.update()
+        advance()
     wall = time.perf_counter() - t0
 else:
     from pegasus.simulator.logic.backends.tools.px4_launch_tool import PX4LaunchTool
@@ -201,7 +220,7 @@ else:
     last_cmd = -1e9
     timeout_steps = int(120 / PHYSICS_DT)
     while sim_steps() < timeout_steps and simulation_app.is_running():
-        simulation_app.update()
+        advance()
         t_sim = sim_steps() * PHYSICS_DT
         msg = mav.recv_match(blocking=False)
         while msg is not None:
@@ -238,6 +257,8 @@ if args.profile:
 
 steps = sim_steps()
 ms_per_step = 1000 * wall / steps
+if args.render_hz is not None:
+    print(f"RESULT manual stepping, rendering at {args.render_hz:g} Hz sim time ({rendered[0]} frames)")
 print(f"RESULT {args.mode}: {steps} steps ({steps * PHYSICS_DT:.1f} s sim) in {wall:.1f} s wall => "
       f"{steps * PHYSICS_DT / wall:.2f}x real time, {ms_per_step:.2f} ms/step")
 for k, v in T.items():
