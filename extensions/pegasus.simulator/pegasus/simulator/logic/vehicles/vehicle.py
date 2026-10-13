@@ -224,6 +224,7 @@ class Vehicle:
 
             # Create (or re-create) the rigid prim wrapper now that physics is ready
             self._body_rigid_prim = RigidPrim(paths=self._stage_prefix + "/body")
+            self._part_rigid_prims = {}
 
             # Initialize the sensors
             for sensor in self._sensors:
@@ -244,8 +245,9 @@ class Vehicle:
         if self._sim_running:
             self._sim_running = False
 
-            # Release the rigid prim wrapper so it can be re-created fresh on next play
+            # Release the rigid prim wrappers so they can be re-created fresh on next play
             self._body_rigid_prim = None
+            self._part_rigid_prims = {}
 
             # Stop the sensors
             for sensor in self._sensors:
@@ -261,6 +263,15 @@ class Vehicle:
 
             self.stop()
 
+    def _get_part_rigid_prim(self, body_part):
+        """Return the RigidPrim for a vehicle part, creating it once per simulation run (constructing one is slow)."""
+        if body_part == "/body":
+            return self._body_rigid_prim
+        cache = self.__dict__.setdefault("_part_rigid_prims", {})
+        if body_part not in cache:
+            cache[body_part] = RigidPrim(paths=self._stage_prefix + body_part)
+        return cache[body_part]
+
     def apply_force(self, force, pos=[0.0, 0.0, 0.0], body_part="/body"):
         """
         Method that will apply a force on the rigidbody, on the part specified in the 'body_part' at its relative position
@@ -274,8 +285,7 @@ class Vehicle:
         if self._body_rigid_prim is None or not self._body_rigid_prim.is_physics_tensor_entity_valid():
             return
 
-        prim_path = self._stage_prefix + body_part
-        rigid_prim = RigidPrim(paths=prim_path) if body_part != "/body" else self._body_rigid_prim
+        rigid_prim = self._get_part_rigid_prim(body_part)
 
         forces = np.array([[force[0], force[1], force[2]]], dtype=np.float32)
         torques = np.zeros((1, 3), dtype=np.float32)
@@ -293,8 +303,7 @@ class Vehicle:
         if self._body_rigid_prim is None or not self._body_rigid_prim.is_physics_tensor_entity_valid():
             return
 
-        prim_path = self._stage_prefix + body_part
-        rigid_prim = RigidPrim(paths=prim_path) if body_part != "/body" else self._body_rigid_prim
+        rigid_prim = self._get_part_rigid_prim(body_part)
 
         forces = np.zeros((1, 3), dtype=np.float32)
         torques = np.array([[torque[0], torque[1], torque[2]]], dtype=np.float32)
