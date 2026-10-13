@@ -34,6 +34,7 @@ parser.add_argument("--out", help="where to save the recorded run (.npz)")
 parser.add_argument("--steps", type=int, default=3000, help="physics steps to record in python mode (250 Hz)")
 parser.add_argument("--render-hz", type=float, default=None,
                     help="step physics manually and render only at this sim-time rate (0 = never); default: let the app step and render")
+parser.add_argument("--gui", action="store_true", help="open the Isaac Sim window (default: headless)")
 parser.add_argument("--profile", action="store_true", help="print the top functions by own time (cProfile)")
 parser.add_argument("--compare", nargs=2, metavar=("REFERENCE", "CANDIDATE"), help="compare two recorded runs and exit")
 args = parser.parse_args()
@@ -65,7 +66,7 @@ if args.compare:
 
 from isaacsim import SimulationApp
 
-simulation_app = SimulationApp({"headless": True})
+simulation_app = SimulationApp({"headless": not args.gui})
 
 import omni.timeline
 import omni.usd
