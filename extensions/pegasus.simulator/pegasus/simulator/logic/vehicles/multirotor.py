@@ -22,6 +22,9 @@ from pegasus.simulator.logic.dynamics import LinearDrag
 from pegasus.simulator.logic.thrusters import QuadraticThrustCurve
 from pegasus.simulator.logic.sensors import Barometer, IMU, Magnetometer, GPS
 
+# Rigid bodies that receive forces every physics step, in the order used by Multirotor.update
+_ROTOR_AND_BODY_PARTS = ("/rotor0", "/rotor1", "/rotor2", "/rotor3", "/body")
+
 class MultirotorConfig:
     """
     A data class that is used for configuring a Multirotor
@@ -126,21 +129,20 @@ class Multirotor(Vehicle):
         # Get the desired forces to apply to the vehicle
         forces_z, _, rolling_moment = self._thrusters.update(self._state, dt)
 
-        # Apply force to each rotor
-        for i in range(4):
-
-            # Apply the force in Z on the rotor frame
-            self.apply_force([0.0, 0.0, forces_z[i]], body_part="/rotor" + str(i))
-
-            # Generate the rotating propeller visual effect
-            self.handle_propeller_visual(i, forces_z[i])
-
-        # Apply the torque to the body frame of the vehicle that corresponds to the rolling moment
-        self.apply_torque([0.0, 0.0, rolling_moment], "/body")
-
         # Compute the total linear drag force to apply to the vehicle's body frame
         drag = self._drag.update(self._state, dt)
-        self.apply_force(drag, body_part="/body")
+
+        # Apply, in a single call, the force in Z on each rotor frame and, on the body, the linear drag force plus the
+        # torque that corresponds to the rolling moment (one batched call is much cheaper than one call per body)
+        self.apply_forces_and_torques(
+            _ROTOR_AND_BODY_PARTS,
+            forces=[[0.0, 0.0, forces_z[0]], [0.0, 0.0, forces_z[1]], [0.0, 0.0, forces_z[2]], [0.0, 0.0, forces_z[3]], drag],
+            torques=[[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, rolling_moment]],
+        )
+
+        # Generate the rotating propeller visual effect
+        for i in range(4):
+            self.handle_propeller_visual(i, forces_z[i])
 
         # Call the update methods in all backends
         for backend in self._backends:

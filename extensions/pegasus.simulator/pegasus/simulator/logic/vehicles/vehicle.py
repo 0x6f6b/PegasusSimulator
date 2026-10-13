@@ -272,6 +272,32 @@ class Vehicle:
             cache[body_part] = RigidPrim(paths=self._stage_prefix + body_part)
         return cache[body_part]
 
+    def apply_forces_and_torques(self, body_parts, forces, torques):
+        """
+        Apply forces and torques to several parts of the vehicle in a single call, at each part's origin and in each
+        part's local frame (FLU). Equivalent to calling apply_force/apply_torque per part, but much cheaper per step.
+
+        Args:
+            body_parts (tuple): Rigid body sub-paths relative to the vehicle stage prefix, e.g. ("/rotor0", "/body").
+            forces (list): One [Fx, Fy, Fz] per body part.
+            torques (list): One [Tx, Ty, Tz] per body part.
+        """
+        if self._body_rigid_prim is None or not self._body_rigid_prim.is_physics_tensor_entity_valid():
+            return
+
+        cache = self.__dict__.setdefault("_part_rigid_prims", {})
+        rigid_prims = cache.get(body_parts)
+        if rigid_prims is None:
+            rigid_prims = RigidPrim(paths=[self._stage_prefix + part for part in body_parts])
+            cache[body_parts] = rigid_prims
+
+        rigid_prims.apply_forces_and_torques_at_pos(
+            forces=np.asarray(forces, dtype=np.float32),
+            torques=np.asarray(torques, dtype=np.float32),
+            positions=np.zeros((len(body_parts), 3), dtype=np.float32),
+            local_frame=True,
+        )
+
     def apply_force(self, force, pos=[0.0, 0.0, 0.0], body_part="/body"):
         """
         Method that will apply a force on the rigidbody, on the part specified in the 'body_part' at its relative position
