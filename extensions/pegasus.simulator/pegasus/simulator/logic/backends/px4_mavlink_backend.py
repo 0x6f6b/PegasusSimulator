@@ -202,6 +202,9 @@ class PX4MavlinkBackendConfig(BackendConfig):
             >>>  "px4_autolaunch": True,
             >>>  "px4_dir": "PegasusInterface().px4_path",
             >>>  "px4_vehicle_model": "gazebo-classic_iris",
+            >>>  "px4_launch_at_rest": True,
+            >>>  "px4_launch_rest_time": 0.5,
+            >>>  "px4_launch_timeout": 10.0,
             >>>  "enable_lockstep": True,
             >>>  "num_rotors": 4,
             >>>  "input_offset": [0.0, 0.0, 0.0, 0.0],
@@ -223,6 +226,14 @@ class PX4MavlinkBackendConfig(BackendConfig):
         self.px4_autolaunch: bool = self.config.get("px4_autolaunch", True)
         self.px4_dir: str = self.config.get("px4_dir", PegasusInterface().px4_path)
         self.px4_vehicle_model: str = self.config.get("px4_vehicle_model", "gazebo-classic_iris")
+
+        # When autolaunching, wait until the vehicle has been at rest (speed < 2 cm/s) for px4_launch_rest_time seconds of
+        # simulated time before starting PX4 (or until px4_launch_timeout seconds have passed). Starting PX4 while the
+        # vehicle is still falling (e.g. before the environment's floor has loaded) can make its estimator initialise
+        # with a badly wrong attitude and refuse to arm ("Preflight Fail: Attitude failure").
+        self.px4_launch_at_rest: bool = self.config.get("px4_launch_at_rest", True)
+        self.px4_launch_rest_time: float = self.config.get("px4_launch_rest_time", 0.5)
+        self.px4_launch_timeout: float = self.config.get("px4_launch_timeout", 10.0)
 
         # Configurations to interpret the rotors control messages coming from mavlink
         self.enable_lockstep: bool = self.config.get("enable_lockstep", True)
@@ -269,6 +280,10 @@ class PX4MavlinkBackend(Backend):
         self.px4_vehicle_model: str = self.config.px4_vehicle_model  # only needed if px4_autolaunch == True
         self.px4_tool: PX4LaunchTool = None
         self.px4_dir: str = self.config.px4_dir
+        self._px4_launch_pending: bool = False
+        self._px4_rest_time: float = 0.0
+        self._px4_wait_time: float = 0.0
+        self._vehicle_speed: float = float("inf")
 
         # Set the update rate used for sending the messages (TODO - remove this hardcoded value from here)
         self._update_rate: float = self.config.update_rate
@@ -437,6 +452,9 @@ class PX4MavlinkBackend(Backend):
             state (State): The current state of the vehicle.
         """
 
+        # Used to decide when the vehicle is at rest (see px4_launch_at_rest)
+        self._vehicle_speed = float(np.linalg.norm(state.linear_velocity))
+
         # Get the quaternion in the convention [x, y, z, w]
         attitude = state.get_attitude_ned_frd()
 
@@ -508,9 +526,19 @@ class PX4MavlinkBackend(Backend):
 
         # Launch the PX4 in the background if needed
         if self.px4_autolaunch and self.px4_tool is None:
-            carb.log_info("Attempting to launch PX4 in background process")
-            self.px4_tool = PX4LaunchTool(self.px4_dir, self._vehicle_id, self.px4_vehicle_model)
-            self.px4_tool.launch_px4()
+            if self.config.px4_launch_at_rest:
+                # Launched from update() once the vehicle has settled
+                self._px4_launch_pending = True
+                self._px4_rest_time = 0.0
+                self._px4_wait_time = 0.0
+            else:
+                self.launch_px4()
+
+    def launch_px4(self):
+        """Launch PX4 in a background process."""
+        carb.log_info("Attempting to launch PX4 in background process")
+        self.px4_tool = PX4LaunchTool(self.px4_dir, self._vehicle_id, self.px4_vehicle_model)
+        self.px4_tool.launch_px4()
 
     def stop(self):
         """Method that when called will handle the stopping of the simulation of vehicle. It will make sure that any open
@@ -529,7 +557,8 @@ class PX4MavlinkBackend(Backend):
         self._connection = None
 
         # Close the PX4 if it was running
-        if self.px4_autolaunch and self.px4_autolaunch is not None:
+        self._px4_launch_pending = False
+        if self.px4_autolaunch and self.px4_tool is not None:
             carb.log_info("Attempting to kill PX4 background process")
             self.px4_tool.kill_px4()
             self.px4_tool = None
@@ -585,6 +614,17 @@ class PX4MavlinkBackend(Backend):
         Args:
             dt (float): The time elapsed between the previous and current function calls (s).
         """
+
+        # Launch PX4 once the vehicle has been at rest long enough (see px4_launch_at_rest)
+        if self._px4_launch_pending:
+            self._px4_wait_time += dt
+            self._px4_rest_time = self._px4_rest_time + dt if self._vehicle_speed < 0.02 else 0.0
+            if self._px4_rest_time >= self.config.px4_launch_rest_time or self._px4_wait_time >= self.config.px4_launch_timeout:
+                if self._px4_rest_time < self.config.px4_launch_rest_time:
+                    carb.log_warn("Vehicle not at rest after px4_launch_timeout: launching PX4 anyway")
+                self._px4_launch_pending = False
+                self.launch_px4()
+            return
 
         # Check for the first hearbeat on the first few iterations
         if not self._received_first_hearbeat:
