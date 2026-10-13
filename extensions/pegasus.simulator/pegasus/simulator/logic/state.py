@@ -8,7 +8,7 @@ __all__ = ["State"]
 
 import numpy as np
 from scipy.spatial.transform import Rotation
-from pegasus.simulator.logic.rotations import rot_ENU_to_NED, rot_FLU_to_FRD
+from pegasus.simulator.logic.rotations import rot_ENU_to_NED, rot_FLU_to_FRD, R_ENU_to_NED, R_FLU_to_FRD, quat_to_matrix, attitude_flu_enu_to_frd_ned
 
 
 class State:
@@ -57,7 +57,7 @@ class State:
         Returns:
             np.ndarray: A numpy array with the [x,y,z] of the vehicle expressed in the inertial frame according to an NED convention.
         """
-        return rot_ENU_to_NED.apply(self.position)
+        return R_ENU_to_NED @ self.position
 
     def get_attitude_ned_frd(self):
         """
@@ -67,8 +67,7 @@ class State:
         Returns:
             np.ndarray: A numpy array with the quaternion [qx, qy, qz, qw] that encodes the attitude of the vehicle's FRD body frame, relative to an NED inertial frame, expressed in the NED inertial frame.
         """
-        attitude_frd_ned = rot_ENU_to_NED * Rotation.from_quat(self.attitude) * rot_FLU_to_FRD
-        return attitude_frd_ned.as_quat()
+        return attitude_flu_enu_to_frd_ned(self.attitude)
 
     def get_linear_body_velocity_ned_frd(self):
         """
@@ -80,10 +79,10 @@ class State:
         """
 
         # Get the linear velocity in FLU convention
-        linear_vel_body_flu = Rotation.from_quat(self.attitude).inv().apply(self.linear_velocity)
+        linear_vel_body_flu = quat_to_matrix(self.attitude).T @ self.linear_velocity
 
         # Convert the linear velocity in the body frame expressed in FLU convention to the FRD convention
-        return rot_FLU_to_FRD.apply(linear_vel_body_flu)
+        return R_FLU_to_FRD @ linear_vel_body_flu
 
     def get_linear_velocity_ned(self):
         """
@@ -94,7 +93,7 @@ class State:
         Returns:
             np.ndarray: A numpy array with [vx,vy,vz] that defines the velocity of the vehicle expressed in the inertial frame according to a NED convention.
         """
-        return rot_ENU_to_NED.apply(self.linear_velocity)
+        return R_ENU_to_NED @ self.linear_velocity
 
     def get_angular_velocity_frd(self):
         """
@@ -105,7 +104,7 @@ class State:
         Returns:
             np.ndarray: A numpy array with [p,q,r] with the angular velocity of the vehicle's FRD body frame, relative to an NED inertial frame, expressed in the FRD body frame.
         """
-        return rot_FLU_to_FRD.apply(self.angular_velocity)
+        return R_FLU_to_FRD @ self.angular_velocity
 
     def get_linear_acceleration_ned(self):
         """
@@ -116,4 +115,4 @@ class State:
         Returns:
             np.ndarray: An array with [x_ddot, y_ddot, z_ddot] with the acceleration of the vehicle expressed in the inertial frame according to an NED convention.
         """
-        return rot_ENU_to_NED.apply(self.linear_acceleration)
+        return R_ENU_to_NED @ self.linear_acceleration

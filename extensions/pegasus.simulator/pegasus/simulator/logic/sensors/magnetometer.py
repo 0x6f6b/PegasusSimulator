@@ -10,7 +10,7 @@ from scipy.spatial.transform import Rotation
 
 from pegasus.simulator.logic.state import State
 from pegasus.simulator.logic.sensors import Sensor
-from pegasus.simulator.logic.rotations import rot_ENU_to_NED, rot_FLU_to_FRD
+from pegasus.simulator.logic.rotations import rot_ENU_to_NED, rot_FLU_to_FRD, R_ENU_to_NED, R_FLU_to_FRD, quat_to_matrix
 from pegasus.simulator.logic.sensors.geo_mag_utils import (
     get_mag_declination,
     get_mag_inclination,
@@ -94,13 +94,11 @@ class Magnetometer(Sensor):
 
         # Rotate the magnetic field vector such that it expresses a field of a body frame according to the front-right-down (FRD)
         # expressed in a North-East-Down (NED) inertial frame (the standard used in magnetometer units)
-        attitude_flu_enu = Rotation.from_quat(state.attitude)
-
-        # Rotate the magnetic field from the inertial frame to the body frame of reference according to the FLU frame convention
-        rot_body_to_world = rot_ENU_to_NED * attitude_flu_enu * rot_FLU_to_FRD.inv()
+        # (body FRD <- world NED is the inverse of rot_ENU_to_NED * attitude_flu_enu * rot_FLU_to_FRD.inv())
+        R_body_to_world = R_ENU_to_NED @ quat_to_matrix(state.attitude) @ R_FLU_to_FRD.T
 
         # The magnetic field expressed in the body frame according to the front-right-down (FRD) convention
-        magnetic_field_body = rot_body_to_world.inv().apply(magnetic_field_inertial)
+        magnetic_field_body = R_body_to_world.T @ magnetic_field_inertial
 
         # -------------------------------
         # Add noise to the magnetic field

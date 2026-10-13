@@ -9,6 +9,8 @@
 import numpy as np
 from scipy.spatial.transform import Rotation
 
+from pegasus.simulator.logic.rotations import quat_to_matrix
+
 # Low level APIs
 import carb
 from pxr import Usd, Gf, UsdGeom
@@ -382,12 +384,11 @@ class Vehicle:
         self._state.linear_velocity = np.array(linear_vel)
 
         # The linear velocity V = [u,v,w] of the vehicle's body frame expressed in the body frame of reference
-        self._state.linear_body_velocity = (
-            Rotation.from_quat(self._state.attitude).inv().apply(self._state.linear_velocity)
-        )
+        R_body_to_world = quat_to_matrix(self._state.attitude)
+        self._state.linear_body_velocity = R_body_to_world.T @ self._state.linear_velocity
 
         # omega = [p, q, r] expressed in body frame
-        self._state.angular_velocity = Rotation.from_quat(self._state.attitude).inv().apply(np.array(ang_vel_world))
+        self._state.angular_velocity = R_body_to_world.T @ np.array(ang_vel_world)
 
         # The acceleration of the vehicle expressed in the inertial frame
         self._state.linear_acceleration = linear_acceleration

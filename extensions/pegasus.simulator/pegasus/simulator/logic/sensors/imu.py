@@ -11,7 +11,7 @@ from scipy.spatial.transform import Rotation
 
 from pegasus.simulator.logic.state import State
 from pegasus.simulator.logic.sensors import Sensor
-from pegasus.simulator.logic.rotations import rot_FLU_to_FRD, rot_ENU_to_NED
+from pegasus.simulator.logic.rotations import rot_FLU_to_FRD, rot_ENU_to_NED, R_FLU_to_FRD, quat_to_matrix, attitude_flu_enu_to_frd_ned
 from pegasus.simulator.logic.sensors.geo_mag_utils import GRAVITY_VECTOR
 
 
@@ -138,7 +138,7 @@ class IMU(Sensor):
         self._prev_linear_velocity = state.linear_velocity
 
         # Compute the linear acceleration of the body frame, with respect to the inertial frame, expressed in the body frame
-        linear_acceleration = np.array(Rotation.from_quat(state.attitude).inv().apply(linear_acceleration_inertial))
+        linear_acceleration = quat_to_matrix(state.attitude).T @ linear_acceleration_inertial
 
         # Simulate the accelerometer noise processes and add them to the true linear aceleration values
         for i in range(3):
@@ -154,19 +154,17 @@ class IMU(Sensor):
         # --------------------------------------------------------------------------------------------
 
         # Convert the orientation to the FRD-NED standard
-        attitude_flu_enu = Rotation.from_quat(state.attitude)
-        attitude_frd_enu = attitude_flu_enu * rot_FLU_to_FRD
-        attitude_frd_ned = rot_ENU_to_NED * attitude_frd_enu
+        attitude_frd_ned = attitude_flu_enu_to_frd_ned(state.attitude)
 
         # Convert the angular velocity from FLU to FRD standard
-        angular_velocity_frd = rot_FLU_to_FRD.apply(angular_velocity)
+        angular_velocity_frd = R_FLU_to_FRD @ angular_velocity
 
         # Convert the linear acceleration in the body frame from FLU to FRD standard
-        linear_acceleration_frd = rot_FLU_to_FRD.apply(linear_acceleration)
+        linear_acceleration_frd = R_FLU_to_FRD @ linear_acceleration
 
         # Add the values to the dictionary and return it
         self._state = {
-            "orientation": attitude_frd_ned.as_quat(),
+            "orientation": attitude_frd_ned,
             "angular_velocity": angular_velocity_frd,
             "linear_acceleration": linear_acceleration_frd,
         }
